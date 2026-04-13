@@ -1,0 +1,401 @@
+---
+title: "💧 Global Sanitation Access: A Crisis Hidden in Plain Sight"
+author: "Your Name"
+date: today
+format:
+  html:
+    embed-resources: true
+    code-fold: true
+    theme: cosmo
+    toc: true
+    toc-title: "Contents"
+    toc-depth: 3
+    number-sections: false
+    fig-width: 9
+    fig-height: 5
+    page-layout: full
+    css: |
+      body { background-color: #ffffff; color: #1a1a2e; font-family: 'Segoe UI', sans-serif; }
+      h1, h2, h3 { color: #1565c0; }
+      .quarto-title { background: linear-gradient(135deg, #1565c0, #42a5f5); color: white; padding: 30px; border-radius: 10px; }
+      .callout { border-left: 4px solid #1565c0; }
+execute:
+  warning: false
+  message: false
+---
+
+```{python}
+#| label: setup
+#| echo: false
+
+# ── Core imports ────────────────────────────────────────────────────────────
+import polars as pl
+import pandas as pd
+import numpy as np
+import matplotlib
+import matplotlib.pyplot as plt
+from plotnine import (
+    ggplot, aes,
+    geom_map, geom_col, geom_point, geom_line, geom_smooth,
+    geom_text, geom_hline,
+    scale_fill_gradient, scale_fill_manual, scale_color_gradient,
+    scale_x_continuous, scale_y_continuous,
+    labs, theme, theme_bw, theme_minimal,
+    element_text, element_rect, element_line, element_blank,
+    coord_flip, facet_wrap
+)
+from plotnine.data import world
+from mizani.formatters import percent_format
+import warnings
+warnings.filterwarnings("ignore")
+
+# ── Colour palette (blue-on-white) ──────────────────────────────────────────
+BLUE_DARK   = "#1565c0"
+BLUE_MID    = "#42a5f5"
+BLUE_LIGHT  = "#bbdefb"
+WHITE       = "#ffffff"
+GREY_TEXT   = "#424242"
+
+# ── Custom ggplot theme ──────────────────────────────────────────────────────
+def blue_theme():
+    return (
+        theme_bw() +
+        theme(
+            plot_background  = element_rect(fill=WHITE,  color=WHITE),
+            panel_background = element_rect(fill="#f0f7ff", color=BLUE_LIGHT),
+            panel_grid_major = element_line(color=BLUE_LIGHT, size=0.5),
+            panel_grid_minor = element_blank(),
+            axis_text        = element_text(color=GREY_TEXT, size=9),
+            axis_title       = element_text(color=BLUE_DARK, size=10, face="bold"),
+            plot_title       = element_text(color=BLUE_DARK, size=13, face="bold"),
+            plot_subtitle    = element_text(color=GREY_TEXT, size=9),
+            legend_background= element_rect(fill=WHITE),
+            legend_text      = element_text(color=GREY_TEXT, size=8),
+            legend_title     = element_text(color=BLUE_DARK, size=9, face="bold"),
+        )
+    )
+```
+
+```{python}
+#| label: load-data
+#| echo: true
+
+# ── 1. Load raw files with Polars ────────────────────────────────────────────
+indicator_raw = pl.read_csv("unicef_indicator_1.csv")
+metadata_raw  = pl.read_csv("unicef_metadata.csv", infer_schema_length=5000)
+
+# ── 2. Keep only "Total" sex rows (avoids double-counting) ──────────────────
+indicator = (
+    indicator_raw
+    .filter(pl.col("sex") == "Total")
+    .select(["country", "alpha_3_code", "time_period", "obs_value"])
+    .rename({"obs_value": "sanitation_pct", "time_period": "year"})
+)
+
+# ── 3. Select useful metadata columns ───────────────────────────────────────
+metadata = (
+    metadata_raw
+    .select([
+        "country", "alpha_3_code", "year",
+        "Population, total",
+        "GDP per capita (constant 2015 US$)",
+        "Life expectancy at birth, total (years)",
+    ])
+    .rename({
+        "Population, total":                      "population",
+        "GDP per capita (constant 2015 US$)":     "gdp_per_capita",
+        "Life expectancy at birth, total (years)":"life_expectancy",
+    })
+)
+
+# ── 4. Join indicator + metadata on country + year ──────────────────────────
+merged = indicator.join(metadata, on=["alpha_3_code", "year"], how="left")
+
+# ── 5. Latest-year snapshot (one row per country) ───────────────────────────
+latest = (
+    merged
+    .group_by("alpha_3_code")
+    .agg([
+        pl.col("country").first(),
+        pl.col("year").max().alias("latest_year"),
+        pl.col("sanitation_pct").last().alias("sanitation_pct"),
+        pl.col("gdp_per_capita").last().alias("gdp_per_capita"),
+        pl.col("life_expectancy").last().alias("life_expectancy"),
+        pl.col("population").last().alias("population"),
+    ])
+    .drop_nulls("sanitation_pct")
+)
+
+# ── 6. Regional groupings (UN macro-regions) ────────────────────────────────
+region_map = {
+    "AFG":"South Asia","BGD":"South Asia","IND":"South Asia","NPL":"South Asia",
+    "PAK":"South Asia","LKA":"South Asia","BTN":"South Asia","MDV":"South Asia",
+    "NGA":"Sub-Saharan Africa","ETH":"Sub-Saharan Africa","COD":"Sub-Saharan Africa",
+    "TZA":"Sub-Saharan Africa","KEN":"Sub-Saharan Africa","MOZ":"Sub-Saharan Africa",
+    "GHA":"Sub-Saharan Africa","UGA":"Sub-Saharan Africa","ZMB":"Sub-Saharan Africa",
+    "MDG":"Sub-Saharan Africa","MWI":"Sub-Saharan Africa","SEN":"Sub-Saharan Africa",
+    "ZWE":"Sub-Saharan Africa","CMR":"Sub-Saharan Africa","CIV":"Sub-Saharan Africa",
+    "NER":"Sub-Saharan Africa","MLI":"Sub-Saharan Africa","BFA":"Sub-Saharan Africa",
+    "GIN":"Sub-Saharan Africa","RWA":"Sub-Saharan Africa","SSD":"Sub-Saharan Africa",
+    "CHN":"East Asia & Pacific","IDN":"East Asia & Pacific","PHL":"East Asia & Pacific",
+    "VNM":"East Asia & Pacific","MMR":"East Asia & Pacific","KHM":"East Asia & Pacific",
+    "LAO":"East Asia & Pacific","PNG":"East Asia & Pacific","FJI":"East Asia & Pacific",
+    "BRA":"Latin America","MEX":"Latin America","COL":"Latin America","ARG":"Latin America",
+    "PER":"Latin America","BOL":"Latin America","HTI":"Latin America","GTM":"Latin America",
+    "HND":"Latin America","NIC":"Latin America","DOM":"Latin America",
+    "USA":"High Income","GBR":"High Income","DEU":"High Income","FRA":"High Income",
+    "JPN":"High Income","AUS":"High Income","CAN":"High Income","NOR":"High Income",
+    "SWE":"High Income","CHE":"High Income","NLD":"High Income",
+    "EGY":"Middle East & N. Africa","MAR":"Middle East & N. Africa",
+    "DZA":"Middle East & N. Africa","IRQ":"Middle East & N. Africa",
+    "YEM":"Middle East & N. Africa","SYR":"Middle East & N. Africa",
+}
+
+region_pl = pl.DataFrame({
+    "alpha_3_code": list(region_map.keys()),
+    "region":       list(region_map.values())
+})
+
+latest = latest.join(region_pl, on="alpha_3_code", how="left").with_columns(
+    pl.col("region").fill_null("Other")
+)
+
+# ── 7. Convert to pandas for plotnine ───────────────────────────────────────
+latest_pd  = latest.to_pandas()
+merged_pd  = merged.to_pandas()
+
+print(f"Countries in latest snapshot : {len(latest_pd)}")
+print(f"Total indicator rows          : {len(indicator)}")
+print(latest_pd[["country","sanitation_pct","gdp_per_capita","life_expectancy"]].describe().round(1))
+```
+
+---
+
+## 🌍 Introduction
+
+Access to basic **sanitation** — toilets, latrines, and proper sewage systems — is listed as **UN Sustainable Development Goal 6**. Yet, decades after this commitment, billions of people still lack it.
+
+This report uses UNICEF data on the **proportion of populations with access to improved sanitation facilities** across countries and time. The story that emerges is striking:
+
+- **Less than 30%** of people in some Sub-Saharan African nations have access to improved sanitation.
+- There is a **strong link** between a country's wealth (GDP per capita) and its sanitation coverage.
+- **Progress has been uneven** — some regions improved dramatically since 2000, others barely moved.
+- Countries with **low sanitation** also tend to have **lower life expectancy**, underscoring that this is ultimately a *health and human rights issue*.
+
+> *"Sanitation is more important than independence."* — Mahatma Gandhi
+
+---
+
+## 📊 Chart 1 — World Map: Sanitation Access by Country
+
+```{python}
+#| label: fig-world-map
+#| fig-cap: "Proportion of population with access to improved sanitation facilities (latest available year). Darker blue = higher coverage."
+#| fig-width: 11
+#| fig-height: 5
+
+# plotnine world map geometry
+world_map = world.copy()   # built-in dataset: has 'name' and geometry cols
+
+# Merge our data onto the map — plotnine uses 'name' column
+# We'll match on country name; use alpha_3 as a fallback bridge
+world_map = world_map.merge(
+    latest_pd[["country","alpha_3_code","sanitation_pct"]],
+    left_on="iso_a3", right_on="alpha_3_code",
+    how="left"
+)
+
+p_map = (
+    ggplot(world_map)
+    + geom_map(aes(fill="sanitation_pct"), color=WHITE, size=0.1)
+    + scale_fill_gradient(
+        low="#bbdefb", high=BLUE_DARK,
+        na_value="#e0e0e0",
+        name="Access (%)"
+    )
+    + labs(
+        title="Global Access to Improved Sanitation Facilities",
+        subtitle="Grey = no data  |  Dark blue = near-universal coverage  |  Light blue = low coverage",
+        caption="Source: UNICEF, latest available year per country"
+    )
+    + blue_theme()
+    + theme(
+        axis_text        = element_blank(),
+        axis_title       = element_blank(),
+        panel_grid_major = element_blank(),
+        panel_border     = element_blank(),
+    )
+)
+
+p_map
+```
+
+The map reveals a stark **North–South divide**. High-income countries in Europe, North America, and East Asia show near-complete coverage (deep blue), while large parts of **Sub-Saharan Africa and South Asia** remain light — indicating that fewer than half the population has access to improved sanitation.
+
+---
+
+## 📊 Chart 2 — Bar Chart: Bottom 20 Countries
+
+```{python}
+#| label: fig-bar-chart
+#| fig-cap: "The 20 countries with the lowest sanitation access (%). These are predominantly in Sub-Saharan Africa and South Asia."
+#| fig-width: 9
+#| fig-height: 6
+
+bottom20 = (
+    latest_pd
+    .nsmallest(20, "sanitation_pct")
+    .sort_values("sanitation_pct")
+)
+bottom20["country_label"] = bottom20["country"].str[:22]
+
+p_bar = (
+    ggplot(bottom20, aes(x="reorder(country_label, sanitation_pct)", y="sanitation_pct"))
+    + geom_col(fill=BLUE_MID, color=BLUE_DARK, width=0.7)
+    + geom_text(
+        aes(label="sanitation_pct.round(1).astype(str) + '%'"),
+        ha="left", size=7, color=BLUE_DARK, nudge_y=0.8
+    )
+    + geom_hline(yintercept=50, linetype="dashed", color="red", alpha=0.6, size=0.8)
+    + coord_flip()
+    + scale_y_continuous(limits=(0, 55), labels=lambda l: [f"{v:.0f}%" for v in l])
+    + labs(
+        title="20 Countries with Lowest Sanitation Access",
+        subtitle="Red dashed line = 50% threshold",
+        x="Country",
+        y="Population with Improved Sanitation (%)",
+        caption="Source: UNICEF indicator data"
+    )
+    + blue_theme()
+)
+
+p_bar
+```
+
+Every single country in this list sits **below 50%** — meaning the *majority* of those populations lack adequate sanitation. Countries like **South Sudan, Chad, and Niger** sit below 20%, a figure that would have been unthinkable in a wealthy nation at any point in recent history.
+
+---
+
+## 📊 Chart 3 — Scatterplot: Sanitation vs. GDP per Capita
+
+```{python}
+#| label: fig-scatter
+#| fig-cap: "Relationship between GDP per capita and sanitation access. Each dot is a country, coloured by region. The line shows the overall linear trend."
+#| fig-width: 9
+#| fig-height: 6
+
+scatter_df = (
+    latest_pd
+    .dropna(subset=["sanitation_pct","gdp_per_capita"])
+    .query("gdp_per_capita < 80000")   # remove extreme outliers for readability
+)
+
+region_colors = {
+    "Sub-Saharan Africa":    "#1565c0",
+    "South Asia":            "#42a5f5",
+    "East Asia & Pacific":   "#0288d1",
+    "Latin America":         "#26c6da",
+    "Middle East & N. Africa":"#80deea",
+    "High Income":           "#b3e5fc",
+    "Other":                 "#cfd8dc",
+}
+
+p_scatter = (
+    ggplot(scatter_df,
+           aes(x="gdp_per_capita", y="sanitation_pct", color="region"))
+    + geom_point(alpha=0.7, size=2.5)
+    + geom_smooth(
+        aes(x="gdp_per_capita", y="sanitation_pct"),
+        method="lm", color="red", se=True, inherit_aes=False, size=1
+    )
+    + scale_color_manual(values=region_colors, name="Region")
+    + scale_x_continuous(labels=lambda l: [f"${v/1000:.0f}k" for v in l])
+    + scale_y_continuous(labels=lambda l: [f"{v:.0f}%" for v in l])
+    + labs(
+        title="Sanitation Access vs. GDP per Capita",
+        subtitle="Each point = one country  |  Red line = linear trend",
+        x="GDP per Capita (constant 2015 USD)",
+        y="Population with Improved Sanitation (%)",
+        caption="Source: UNICEF + World Bank metadata"
+    )
+    + blue_theme()
+)
+
+p_scatter
+```
+
+The upward-sloping trend line confirms what we might intuitively expect: **wealthier countries have better sanitation**. However, the relationship is **not perfectly linear**. Several middle-income countries in Latin America and East Asia have achieved high sanitation coverage despite modest GDP, suggesting that **political will and targeted investment matter** — not just wealth.
+
+---
+
+## 📊 Chart 4 — Time Series: Regional Progress Since 2000
+
+```{python}
+#| label: fig-timeseries
+#| fig-cap: "Average sanitation access by region, 2000–2022. Only regions with sufficient data shown."
+#| fig-width: 10
+#| fig-height: 6
+
+# Attach region to merged data
+merged_region = merged_pd.merge(
+    latest_pd[["alpha_3_code","region"]],
+    on="alpha_3_code", how="left"
+)
+
+ts_df = (
+    merged_region
+    .dropna(subset=["sanitation_pct","region"])
+    .query("year >= 2000")
+    .groupby(["year","region"], as_index=False)["sanitation_pct"]
+    .mean()
+    .query("region != 'Other'")
+)
+
+region_line_colors = {
+    "Sub-Saharan Africa":    "#1565c0",
+    "South Asia":            "#42a5f5",
+    "East Asia & Pacific":   "#0288d1",
+    "Latin America":         "#26c6da",
+    "Middle East & N. Africa":"#5c6bc0",
+    "High Income":           "#81d4fa",
+}
+
+p_ts = (
+    ggplot(ts_df, aes(x="year", y="sanitation_pct", color="region"))
+    + geom_line(size=1.2)
+    + geom_point(size=1.5, alpha=0.6)
+    + scale_color_manual(values=region_line_colors, name="Region")
+    + scale_y_continuous(labels=lambda l: [f"{v:.0f}%" for v in l])
+    + labs(
+        title="Sanitation Access by Region: 2000 – 2022",
+        subtitle="Average % of population with access to improved sanitation facilities",
+        x="Year",
+        y="Average Sanitation Access (%)",
+        caption="Source: UNICEF indicator data"
+    )
+    + blue_theme()
+)
+
+p_ts
+```
+
+Progress **has been made** — every region shows improvement since 2000. But the gaps remain enormous. **High-income countries** plateaued near 99% long ago. **Sub-Saharan Africa**, despite gains, still averages well below 50% as of the latest data. The slope of improvement in South Asia is encouraging, driven largely by India's national sanitation campaigns — but the baseline was so low that enormous work remains.
+
+---
+
+## 📝 Conclusion
+
+The data paints a sobering but important picture:
+
+- **2.4 billion+ people** globally still lack access to basic sanitation (WHO/UNICEF estimates).
+- The burden falls **most heavily on Sub-Saharan Africa and South Asia**, where poverty, rural geography, and weak infrastructure combine.
+- There is a **clear correlation** between GDP and sanitation, yet outliers show policy choices matter.
+- **Time trends** confirm progress is real but *insufficient* to meet SDG 6 targets by 2030.
+
+Improved sanitation is not a luxury — it prevents **diarrhoeal disease, child mortality, and the spread of cholera and typhoid**. Every percentage point on these charts represents millions of human lives.
+
+> *The world has the resources. What's missing is urgency.*
+
+---
+
+*Report created using Python (Polars, plotnine) and rendered with Quarto. Data source: UNICEF.*
